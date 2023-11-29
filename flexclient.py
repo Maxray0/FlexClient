@@ -110,13 +110,97 @@ def fxHandleError(fx_resp, web_response = None): # returns True if an error was 
 
 	global fxsock
 
-	if(fx_resp == None or "fatal_error" in fx_resp or not "fx_msg_type" in fx_resp):
+	if(fx_resp == None or (isinstance(fx_resp, dict) and ("fatal_error" in fx_resp or not "fx_msg_type" in fx_resp))):
 		if(web_response != None):
-			fxError(web_response, "Connection error" if (fx_resp == None or not "fatal_error" in fx_resp) else fx_resp["fatal_error"])
+			fxError(web_response, "Connection error" if (fx_resp == None or not isinstance(fx_resp, dict) or not "fatal_error" in fx_resp) else fx_resp["fatal_error"])
 		fxReset()
 		return True
 	
 	return False
+
+FX_LOGIN_RQ = "login"
+FX_RQ_MAP = {
+	"fx_poll" : {
+		"response_type": "json"
+	},
+	"fx_update_module_state" : {
+		"response_type": "none"
+	},
+}
+
+def fxHandleWebRequest(web_msg):
+
+	global fxsock
+
+	msg_type = web_msg["fx_msg_type"]
+	web_response = {}
+
+	if((fxsock == None and msg_type != FX_LOGIN_RQ) or (msg_type != FX_LOGIN_RQ and not msg_type in FX_RQ_MAP)):
+		fxError(web_response)
+		return json.dumps(web_response)
+
+	if(msg_type == FX_LOGIN_RQ):
+		
+		fxReset()
+
+		time.sleep(1) # wait cuz flexlion might need a bit of time to reset the socket
+
+
+		fxsock = socket.socket(socket.AF_INET,
+						socket.SOCK_STREAM)
+		fxsock.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
+		fxsock.settimeout(8)
+		try:
+			fxsock.connect((web_msg["fx_ip"], int(web_msg["fx_port"])))
+			print(f"Connected to target at {web_msg['fx_ip']}:{web_msg['fx_port']}, trying to log in...")
+		except:
+			fxError(web_response, "Failed to connect to target.")
+			print("Failed to connect to target")
+			return json.dumps(web_response)
+		
+		sendFxText(web_msg["fx_pwd"])
+		
+		fx_resp = recvFxJson()
+
+		if(not fxHandleError(fx_resp, web_response)):
+
+			web_response = fx_resp
+			fx_net_ctrl_ver = fx_resp["fx_net_ctrl_ver"]
+
+			print(f"Logged in, build_type = {fx_resp['build_type']}, fx_net_ctrl_ver = {fx_net_ctrl_ver}")
+
+		else:
+
+			print(f"Login failed, error: {web_response['error']}")
+
+		return json.dumps(web_response)
+	
+	rq_info = FX_RQ_MAP[msg_type]
+	resp_type = rq_info["response_type"]
+	
+	sendFxJson(web_msg)
+
+	if(resp_type == "none"):
+		return
+	elif(resp_type == "json"):
+		fx_resp = recvFxJson()
+	elif(resp_type == "plaintext"):
+		fx_resp = recvFxText()
+	elif(resp_type == "raw"): # does this one send over the websocket?
+		fx_resp = recvFx()
+
+	if(not fxHandleError(fx_resp, web_response)):
+
+		web_response = fx_resp
+
+		if(isinstance(web_response, dict)):
+			return json.dumps(web_response)
+		
+		return web_response
+
+	else:
+		
+		return json.dumps(web_response)
 
 async def webhandler(websocket, path):
 
@@ -128,75 +212,34 @@ async def webhandler(websocket, path):
 		try:
 			web_msg = json.loads(await websocket.recv())
 		except:
-			fxReset()
+			with fxcommlock:
+				fxReset()
+			try:
+				await websocket.close()
+			except:
+				pass
 			return
 		
-		web_response = {}
-
 		with fxcommlock:
+			web_response = fxHandleWebRequest(web_msg)
 
-			if(fxsock == None and web_msg["fx_msg_type"] != "login"):
-
-				fxError(web_response)
-
-			elif(web_msg["fx_msg_type"] == "login"):
-				
-				fxReset()
-
-				time.sleep(1) # wait cuz flexlion might need a bit of time to reset the socket
-
-				connected = False
-
-				fxsock = socket.socket(socket.AF_INET,
-								socket.SOCK_STREAM)
-				fxsock.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
-				fxsock.settimeout(8)
-				try:
-					fxsock.connect((web_msg["fx_ip"], int(web_msg["fx_port"])))
-					connected = True
-					print(f"Connected to target at {web_msg['fx_ip']}:{web_msg['fx_port']}, trying to log in...")
-				except:
-					fxError(web_response, "Failed to connect to target.")
-					print("Failed to connect to target")
-
-				if(connected):
-				
-					sendFxText(web_msg["fx_pwd"])
-					
-					fx_resp = recvFxJson()
-
-					if(not fxHandleError(fx_resp, web_response)):
-
-						web_response = fx_resp
-						fx_net_ctrl_ver = fx_resp["fx_net_ctrl_ver"]
-
-						print(f"Logged in, build_type = {fx_resp['build_type']}, fx_net_ctrl_ver = {fx_net_ctrl_ver}")
-
-					else:
-
-						print(f"Login failed, error: {web_response['error']}")
-						
-						fxReset()
-
-
-			elif(web_msg["fx_msg_type"] in ["fx_poll", "fx_update_module_state"]):
-				
-				sendFxJson(web_msg)
-
-				fx_resp = recvFxJson()
-
-				if(not fxHandleError(fx_resp, web_response)):
-					
-					web_response = fx_resp
-
-			else:
-
-				print("Unknown msg type!")
+		if(fxsock == None):
+			try:
+				await websocket.close()
+			except:
+				pass
+			return
 
 		try:
-			await websocket.send(json.dumps(web_response))
+			if(web_response != None):
+				await websocket.send(web_response)
 		except:
-			fxReset()
+			with fxcommlock:
+				fxReset()
+			try:
+				await websocket.close()
+			except:
+				pass
 			return
  
 wsserver = websockets.serve(webhandler, "localhost", int(bPort))
