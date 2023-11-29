@@ -223,19 +223,19 @@ async def webhandler(websocket, path):
 		with fxcommlock:
 			web_response = fxHandleWebRequest(web_msg)
 
-		if(fxsock == None):
-			try:
-				await websocket.close()
-			except:
-				pass
-			return
-
 		try:
 			if(web_response != None):
 				await websocket.send(web_response)
 		except:
 			with fxcommlock:
 				fxReset()
+			try:
+				await websocket.close()
+			except:
+				pass
+			return
+		
+		if(fxsock == None):
 			try:
 				await websocket.close()
 			except:
