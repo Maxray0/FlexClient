@@ -202,7 +202,7 @@ def fxHandleWebRequest(web_msg):
 		
 		return json.dumps(web_response)
 
-async def webhandler(websocket, path):
+async def webhandler(websocket):
 
 	global fxsock
 	global fx_net_ctrl_ver
@@ -242,7 +242,10 @@ async def webhandler(websocket, path):
 				pass
 			return
  
-wsserver = websockets.serve(webhandler, "localhost", int(bPort))
- 
-asyncio.get_event_loop().run_until_complete(wsserver)
-asyncio.get_event_loop().run_forever()
+async def main():
+    async with websockets.serve(webhandler, "localhost", int(bPort)):
+        print(f"WebSocket server started on port {bPort}")
+        await asyncio.Future()  # run forever
+
+if __name__ == "__main__":
+    asyncio.run(main())
